@@ -7,7 +7,7 @@ import random
 import re
 
 cwd = os.getcwd() 
-data_path = join(cwd,'ILSVRC2015/Data/CLS-LOC/train')
+data_path = join(cwd, 'images')
 savedir = './'
 dataset_list = ['base', 'val', 'novel']
 
@@ -17,7 +17,7 @@ dataset_list = ['base', 'val', 'novel']
 cl = -1
 folderlist = []
 
-datasetmap = {'base':'train','val':'val','novel':'test'};
+datasetmap = {'base':'train','val':'val','novel':'test'}
 filelists = {'base':{},'val':{},'novel':{} }
 filelists_flat = {'base':[],'val':[],'novel':[] }
 labellists_flat = {'base':[],'val':[],'novel':[] }
@@ -27,17 +27,13 @@ for dataset in dataset_list:
         for i, line in enumerate(lines):
             if i == 0:
                 continue
-            fid, _ , label = re.split(',|\.', line)
+            fid, label = re.split(',', line)
             label = label.replace('\n','')
             if not label in filelists[dataset]:
                 folderlist.append(label)
                 filelists[dataset][label] = []
-                fnames = listdir( join(data_path, label) )
-                fname_number = [ int(re.split('_|\.', fname)[1]) for fname in fnames]
-                sorted_fnames = list(zip( *sorted(  zip(fnames, fname_number), key = lambda f_tuple: f_tuple[1] )))[0]
                  
-            fid = int(fid[-5:])-1
-            fname = join( data_path,label, sorted_fnames[fid] )
+            fname = join(data_path, label, fid)
             filelists[dataset][label].append(fname)
 
     for key, filelist in filelists[dataset].items():

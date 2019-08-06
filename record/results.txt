@@ -1,0 +1,14 @@
+Time: 20190803-204123, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 48.60% +- 0.64% 
+Time: 20190804-082803, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 49.34% +- 0.64% 
+Time: 20190804-083803, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 52.50% +- 0.67% 
+Time: 20190804-085110, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 51.58% +- 0.66% 
+Time: 20190804-085935, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 48.64% +- 0.62% 
+Time: 20190804-091149, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 48.63% +- 0.66% 
+Time: 20190804-091557, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 52.50% +- 0.62% 
+Time: 20190804-165816, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 48.87% +- 0.62% 
+Time: 20190804-195822, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 49.60% +- 0.62% 
+Time: 20190804-200902, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 49.32% +- 0.65% 
+Time: 20190804-201029, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 48.65% +- 0.63% 
+Time: 20190804-222542, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 49.28% +- 0.67% 
+Time: 20190804-225252, Setting: miniImagenet-novel-ResNet18-baseline++ 5shot 5way_test, Acc: 600 Test Acc = 49.39% +- 0.66% 
+Time: 20190806-082441, Setting: miniImagenet-novel-ResNet18-simplenet 5shot 5way_train 5way_test, Acc: 600 Test Acc = 50.56% +- 0.67% 
