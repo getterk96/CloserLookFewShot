@@ -1,12 +1,12 @@
 # This code is modified from https://github.com/facebookresearch/low-shot-shrink-hallucinate
 
 import torch
-from torch.autograd import Variable
 import torch.nn as nn
 import math
-import numpy as np
 import torch.nn.functional as F
+from parts.shake_shake_function import *
 from torch.nn.utils.weight_norm import WeightNorm
+from parts.large_margin_softmax import LSoftmaxLinear
 
 
 # Basic ResNet model
@@ -22,26 +22,30 @@ def init_layer(L):
 
 
 class distLinear(nn.Module):
-    def __init__(self, indim, outdim):
+    def __init__(self, indim, outdim, temperature, margin):
         super(distLinear, self).__init__()
-        self.L = nn.Linear(indim, outdim, bias=False)
-        self.class_wise_learnable_norm = True  # See the issue#4&8 in the github
-        if self.class_wise_learnable_norm:
-            WeightNorm.apply(self.L, 'weight', dim=0)  # split the weight update component to direction and norm
+
+        self.margin = margin
+        if margin is None:
+            self.L = nn.Linear(indim, outdim, bias=False)
+        else:
+            self.L = LSoftmaxLinear(indim, outdim, margin)
+            self.L.reset_parameters()
+
+        WeightNorm.apply(self.L, 'weight', dim=0)  # split the weight update component to direction and norm
 
         if outdim <= 200:
-            self.scale_factor = 2  # a fixed scale factor to scale the output of cos value into a reasonably large input for softmax
+            self.scale_factor = temperature  # a fixed scale factor to scale the output of cos value into a reasonably large input for softmax
         else:
-            self.scale_factor = 10  # in omniglot, a larger scale factor is required to handle >1000 output classes.
+            self.scale_factor = temperature  # in omniglot, a larger scale factor is required to handle >1000 output classes.
 
-    def forward(self, x):
+    def forward(self, x, y):
         x_norm = torch.norm(x, p=2, dim=1).unsqueeze(1).expand_as(x)
         x_normalized = x.div(x_norm + 0.00001)
-        if not self.class_wise_learnable_norm:
-            L_norm = torch.norm(self.L.weight.data, p=2, dim=1).unsqueeze(1).expand_as(self.L.weight.data)
-            self.L.weight.data = self.L.weight.data.div(L_norm + 0.00001)
-        cos_dist = self.L(
-            x_normalized)  # matrix product by forward function, but when using WeightNorm, this also multiply the cosine distance by a class-wise learnable norm, see the issue#4&8 in the github
+        if self.margin is None:
+            cos_dist = self.L(x_normalized)
+        else:
+            cos_dist = self.L(x_normalized, y)
         scores = self.scale_factor * (cos_dist)
 
         return scores
@@ -146,10 +150,11 @@ class ConvBlock(nn.Module):
 class SimpleBlock(nn.Module):
     maml = False  # Default
 
-    def __init__(self, indim, outdim, half_res):
+    def __init__(self, indim, outdim, half_res, shake_config):
         super(SimpleBlock, self).__init__()
         self.indim = indim
         self.outdim = outdim
+        self.shake_config = shake_config
         if self.maml:
             self.C1 = Conv2d_fw(indim, outdim, kernel_size=3, stride=2 if half_res else 1, padding=1, bias=False)
             self.BN1 = BatchNorm2d_fw(outdim)
@@ -192,7 +197,12 @@ class SimpleBlock(nn.Module):
         out = self.C2(out)
         out = self.BN2(out)
         short_out = x if self.shortcut_type == 'identity' else self.BNshortcut(self.shortcut(x))
-        out = out + short_out
+
+        if self.shake_config is not None:
+            alpha, beta = get_alpha_beta(x.size(0), self.shake_config, x.device)
+            out = shake_function(out, short_out, alpha, beta)
+        else:
+            out = out + short_out
         out = self.relu2(out)
         return out
 
@@ -201,11 +211,12 @@ class SimpleBlock(nn.Module):
 class BottleneckBlock(nn.Module):
     maml = False  # Default
 
-    def __init__(self, indim, outdim, half_res):
+    def __init__(self, indim, outdim, half_res, shake_config):
         super(BottleneckBlock, self).__init__()
         bottleneckdim = int(outdim / 4)
         self.indim = indim
         self.outdim = outdim
+        self.shake_config = shake_config
         if self.maml:
             self.C1 = Conv2d_fw(indim, bottleneckdim, kernel_size=1, bias=False)
             self.BN1 = BatchNorm2d_fw(bottleneckdim)
@@ -251,8 +262,12 @@ class BottleneckBlock(nn.Module):
         out = self.relu(out)
         out = self.C3(out)
         out = self.BN3(out)
-        out = out + short_out
 
+        if self.shake_config is not None:
+            alpha, beta = get_alpha_beta(x.size(0), self.shake_config, x.device)
+            out = shake_function(out, short_out, alpha, beta)
+        else:
+            out = out + short_out
         out = self.relu(out)
         return out
 
@@ -344,7 +359,7 @@ class ConvNetSNopool(
 class ResNet(nn.Module):
     maml = False  # Default
 
-    def __init__(self, block, list_of_num_layers, list_of_out_dims, flatten=True):
+    def __init__(self, block, list_of_num_layers, list_of_out_dims, flatten=True, shake_config=None):
         # list_of_num_layers specifies number of layers in each stage
         # list_of_out_dims specifies number of output channel for each stage
         super(ResNet, self).__init__()
@@ -371,7 +386,7 @@ class ResNet(nn.Module):
 
             for j in range(list_of_num_layers[i]):
                 half_res = (i >= 1) and (j == 0)
-                B = block(indim, list_of_out_dims[i], half_res)
+                B = block(indim, list_of_out_dims[i], half_res, shake_config)
                 trunk.append(B)
                 indim = list_of_out_dims[i]
 
@@ -414,21 +429,21 @@ def Conv4SNP():
     return ConvNetSNopool(4)
 
 
-def ResNet10(flatten=True):
-    return ResNet(SimpleBlock, [1, 1, 1, 1], [64, 128, 256, 512], flatten)
+def ResNet10(flatten=True, shake_config=None):
+    return ResNet(SimpleBlock, [1, 1, 1, 1], [64, 128, 256, 512], flatten, shake_config)
 
 
-def ResNet18(flatten=True):
-    return ResNet(SimpleBlock, [2, 2, 2, 2], [64, 128, 256, 512], flatten)
+def ResNet18(flatten=True, shake_config=None):
+    return ResNet(SimpleBlock, [2, 2, 2, 2], [64, 128, 256, 512], flatten, shake_config)
 
 
-def ResNet34(flatten=True):
-    return ResNet(SimpleBlock, [3, 4, 6, 3], [64, 128, 256, 512], flatten)
+def ResNet34(flatten=True, shake_config=None):
+    return ResNet(SimpleBlock, [3, 4, 6, 3], [64, 128, 256, 512], flatten, shake_config)
 
 
-def ResNet50(flatten=True):
-    return ResNet(BottleneckBlock, [3, 4, 6, 3], [256, 512, 1024, 2048], flatten)
+def ResNet50(flatten=True, shake_config=None):
+    return ResNet(BottleneckBlock, [3, 4, 6, 3], [256, 512, 1024, 2048], flatten, shake_config)
 
 
-def ResNet101(flatten=True):
-    return ResNet(BottleneckBlock, [3, 4, 23, 3], [256, 512, 1024, 2048], flatten)
+def ResNet101(flatten=True, shake_config=None):
+    return ResNet(BottleneckBlock, [3, 4, 23, 3], [256, 512, 1024, 2048], flatten, shake_config)

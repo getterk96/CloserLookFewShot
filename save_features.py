@@ -8,13 +8,13 @@ import h5py
 import configs
 import backbone
 from data.datamgr import SimpleDataManager
-from methods.baselinetrain import BaselineTrain
+from methods.baseline import BaselineTrain
 from methods.baselinefinetune import BaselineFinetune
 from methods.protonet import ProtoNet
 from methods.matchingnet import MatchingNet
 from methods.relationnet import RelationNet
 from methods.maml import MAML
-from io_utils import model_dict, parse_args, get_resume_file, get_best_file, get_assigned_file
+from io_utils_old import model_dict, parse_args, get_resume_file, get_best_file, get_assigned_file
 
 
 def save_features(model, data_loader, outfile):

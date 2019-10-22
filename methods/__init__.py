@@ -1,5 +1,5 @@
 from . import meta_template
-from . import baselinetrain
+from . import baseline
 from . import baselinefinetune
 from . import matchingnet
 from . import protonet

@@ -4,6 +4,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 import torch.optim
 import torch.optim.lr_scheduler as lr_scheduler
+from tensorboardX import SummaryWriter
 import time
 import os
 import glob
@@ -11,38 +12,43 @@ import glob
 import configs
 import backbone
 from data.datamgr import SimpleDataManager, SetDataManager
-from methods.baselinetrain import BaselineTrain
+from methods.baseline import BaselineTrain
 from methods.baselinefinetune import BaselineFinetune
-from methods.simplenet import SimpleNet
+from methods.simplenet import SimpleNetTrain
 from methods.protonet import ProtoNet
 from methods.matchingnet import MatchingNet
 from methods.relationnet import RelationNet
 from methods.maml import MAML
-from io_utils import model_dict, parse_args, get_resume_file
+from io_utils_old import model_dict, parse_args, get_resume_file
 
 
-def train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch, params):
+def train(base_loader, val_loader, train_model, test_model, optimization, start_epoch, stop_epoch, params, key):
     if optimization == 'Adam':
-        optimizer = torch.optim.Adam(model.parameters())
+        train_optimizer = torch.optim.Adam(train_model.parameters())
+        test_optimizer = torch.optim.Adam(test_model.parameters())
     else:
         raise ValueError('Unknown optimization, please define by yourself')
 
+    writer = SummaryWriter(log_dir='/home/gaojinghan/closer/vis_log/%s' % key)  # todo
+
     max_acc = 0
-
+    test_start_epoch = int((stop_epoch - start_epoch) * params.test_start_epoch) + start_epoch
     for epoch in range(start_epoch, stop_epoch):
-        model.train()
-        model.train_loop(epoch, base_loader, optimizer)  # model are called by reference, no need to return
-        model.eval()
+        train_model.train()
+        train_model.train_loop(epoch, base_loader, train_optimizer,
+                               writer)  # model are called by reference, no need to return
 
-        if not os.path.isdir(params.checkpoint_dir):
-            os.makedirs(params.checkpoint_dir)
+        if epoch >= test_start_epoch:
+            test_model.eval()
+            if not os.path.isdir(params.checkpoint_dir):
+                os.makedirs(params.checkpoint_dir)
 
-        acc = model.test_loop(val_loader)
-        if acc > max_acc:  # for baseline and baseline++, we don't use validation here so we let acc = -1
-            print("best model! save...")
-            max_acc = acc
-            outfile = os.path.join(params.checkpoint_dir, 'best_model.tar')
-            torch.save({'epoch': epoch, 'state': model.state_dict()}, outfile)
+            acc = test_model.test_loop(val_loader, ) # todo
+            if acc > max_acc:  # for baseline and baseline++, we don't use validation here so we let acc = -1
+                print("best model! save...")
+                max_acc = acc
+                outfile = os.path.join(params.checkpoint_dir, 'best_model.tar')
+                torch.save({'epoch': epoch, 'state': model.state_dict()}, outfile)
 
         if (epoch % params.save_freq == 0) or (epoch == stop_epoch - 1):
             outfile = os.path.join(params.checkpoint_dir, '{:d}.tar'.format(epoch))
@@ -80,7 +86,7 @@ if __name__ == '__main__':
     optimization = 'Adam'
 
     if params.stop_epoch == -1:
-        if params.method in ['baseline', 'baseline++']:
+        if params.method == 'baseline':
             if params.dataset in ['omniglot', 'cross_char']:
                 params.stop_epoch = 5
             elif params.dataset in ['CUB']:
@@ -97,7 +103,7 @@ if __name__ == '__main__':
             else:
                 params.stop_epoch = 600  # default
 
-    if params.method in ['baseline', 'baseline++']:
+    if params.method == 'baseline':
         base_datamgr = SimpleDataManager(image_size, batch_size=16)
         base_loader = base_datamgr.get_data_loader(base_file, aug=params.train_aug)
         val_datamgr = SimpleDataManager(image_size, batch_size=64)
@@ -109,9 +115,11 @@ if __name__ == '__main__':
             assert params.num_classes >= 1597, 'class number need to be larger than max label id in base class'
 
         if params.method == 'baseline':
-            model = BaselineTrain(model_dict[params.model], params.num_classes, centered=False)
-        elif params.method == 'baseline++':
-            model = BaselineTrain(model_dict[params.model], params.num_classes, loss_type='dist')
+            train_model = BaselineTrain(model_dict[params.model], params.num_classes, loss_type=params.loss_type,
+                                        margin=params.margin, centered=params.centered, temperature=params.temperature)
+            test_model = BaselineFinetune(model_dict[params.model], params.num_classes, params.n_shot,
+                                          loss_type=params.loss_type, margin=params.margin, centered=params.centered,
+                                          temperature=params.temperature)
 
     elif params.method in ['simplenet', 'protonet', 'matchingnet', 'relationnet', 'relationnet_softmax', 'maml',
                            'maml_approx']:
@@ -128,11 +136,12 @@ if __name__ == '__main__':
         # a batch for SetDataManager: a [n_way, n_support + n_query, dim, w, h] tensor
 
         if params.method == 'simplenet':
-            model = SimpleNet(model_dict[params.model], **train_few_shot_params)
+            train_model = SimpleNetTrain(model_dict[params.model], params.temperature, params.num_classes,
+                                   **train_few_shot_params)
         elif params.method == 'protonet':
-            model = ProtoNet(model_dict[params.model], **train_few_shot_params)
+            train_model = ProtoNet(model_dict[params.model], **train_few_shot_params)
         elif params.method == 'matchingnet':
-            model = MatchingNet(model_dict[params.model], **train_few_shot_params)
+            train_model = MatchingNet(model_dict[params.model], **train_few_shot_params)
         elif params.method in ['relationnet', 'relationnet_softmax']:
             if params.model == 'Conv4':
                 feature_model = backbone.Conv4NP
@@ -144,28 +153,31 @@ if __name__ == '__main__':
                 feature_model = lambda: model_dict[params.model](flatten=False)
             loss_type = 'mse' if params.method == 'relationnet' else 'softmax'
 
-            model = RelationNet(feature_model, loss_type=loss_type, **train_few_shot_params)
+            train_model = RelationNet(feature_model, loss_type=loss_type, **train_few_shot_params)
         elif params.method in ['maml', 'maml_approx']:
             backbone.ConvBlock.maml = True
             backbone.SimpleBlock.maml = True
             backbone.BottleneckBlock.maml = True
             backbone.ResNet.maml = True
-            model = MAML(model_dict[params.model], approx=(params.method == 'maml_approx'), **train_few_shot_params)
+            train_model = MAML(model_dict[params.model], approx=(params.method == 'maml_approx'), **train_few_shot_params)
             if params.dataset in ['omniglot', 'cross_char']:  # maml use different parameter in omniglot
-                model.n_task = 32
-                model.task_update_num = 1
-                model.train_lr = 0.1
+                train_model.n_task = 32
+                train_model.task_update_num = 1
+                train_model.train_lr = 0.1
+        test_model = train_model
     else:
         raise ValueError('Unknown method')
 
-    model = model.cuda()
+    train_model = train_model.cuda()
+    test_model = test_model.cuda()
 
-    params.checkpoint_dir = '%s/checkpoints/%s/%s_%s_%s' % (
-    configs.save_dir, params.dataset, params.model, params.method, params.reminder)
+    key = "%s_%s_%s_Temp-%s_Margin-%s" % (
+        params.model, time.strftime('%c'), params.loss_type, params.temperature, params.margin)
     if params.train_aug:
-        params.checkpoint_dir += '_aug'
-    if not params.method in ['baseline', 'baseline++']:
-        params.checkpoint_dir += '_%dway_%dshot' % (params.train_n_way, params.n_shot)
+        key += '_aug'
+    if not params.method == 'baseline':
+        key += '_%dway_%dshot' % (params.train_n_way, params.n_shot)
+    params.checkpoint_dir = '%s/checkpoints/%s/%s' % (configs.save_dir, params.dataset, key)
 
     if not os.path.isdir(params.checkpoint_dir):
         os.makedirs(params.checkpoint_dir)
@@ -173,20 +185,18 @@ if __name__ == '__main__':
     start_epoch = params.start_epoch
     stop_epoch = params.stop_epoch
     if params.method == 'maml' or params.method == 'maml_approx':
-        stop_epoch = params.stop_epoch * model.n_task  # maml use multiple tasks in one update
+        stop_epoch = params.stop_epoch * train_model.n_task  # maml use multiple tasks in one update
 
     if params.resume:
         resume_file = get_resume_file(params.checkpoint_dir)
         if resume_file is not None:
             tmp = torch.load(resume_file)
             start_epoch = tmp['epoch'] + 1
-            model.load_state_dict(tmp['state'])
+            train_model.load_state_dict(tmp['state'])
     elif params.warmup:  # We also support warmup from pretrained baseline feature, but we never used in our paper
-        baseline_checkpoint_dir = '%s/checkpoints/%s/%s_%s_%s' % (
-        configs.save_dir, params.dataset, params.model, 'baseline', params.reminder)
-        if params.train_aug:
-            baseline_checkpoint_dir += '_aug'
-        warmup_resume_file = get_resume_file(baseline_checkpoint_dir)
+        checkpoint_dir = '%s/checkpoints/%s/%s' % (
+            configs.save_dir, params.dataset, key)
+        warmup_resume_file = get_resume_file(checkpoint_dir)
         tmp = torch.load(warmup_resume_file)
         if tmp is not None:
             state = tmp['state']
@@ -198,8 +208,8 @@ if __name__ == '__main__':
                     state[newkey] = state.pop(key)
                 else:
                     state.pop(key)
-            model.feature.load_state_dict(state)
+            train_model.feature.load_state_dict(state)
         else:
             raise ValueError('No warm_up file')
 
-    model = train(base_loader, val_loader, model, optimization, start_epoch, stop_epoch, params)
+    model = train(base_loader, val_loader, train_model, test_model, optimization, start_epoch, stop_epoch, params, key)

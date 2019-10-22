@@ -6,10 +6,11 @@ import numpy as np
 import torch.nn.functional as F
 import utils
 from abc import abstractmethod
+from parts.center_loss import CenterLoss
 
 
 class MetaTemplate(nn.Module):
-    def __init__(self, model_func, n_way, n_support, change_way=True):
+    def __init__(self, model_func, n_way, n_support, centered=False, alpha=0.01, change_way=True):
         super(MetaTemplate, self).__init__()
         self.n_way = n_way
         self.n_support = n_support
@@ -17,9 +18,14 @@ class MetaTemplate(nn.Module):
         self.feature = model_func()
         self.feat_dim = self.feature.final_feat_dim
         self.change_way = change_way  # some methods allow different_way classification during training and test
+        self.alpha = alpha
+        self.centered = centered
+        if self.centered:
+            self.loss_center = CenterLoss(num_classes=n_way, feat_dim=self.feature.final_feat_dim)
+            self.loss_center = self.loss_center.cuda()
 
     @abstractmethod
-    def set_forward(self, x, is_feature):
+    def set_forward(self, iter, x, is_feature):
         pass
 
     @abstractmethod
@@ -35,8 +41,8 @@ class MetaTemplate(nn.Module):
         if is_feature:
             z_all = x
         else:
-            x = x.contiguous().view(self.n_way * (self.n_support + self.n_query), *x.size()[2:])
-            z_all = self.feature.forward(x)
+            x = x.contiguous().view(self.n_way * (self.n_support + self.n_query), * x.size()[2:])
+            z_all = self.feature(x)
             z_all = z_all.view(self.n_way, self.n_support + self.n_query, -1)
         z_support = z_all[:, :self.n_support]
         z_query = z_all[:, self.n_support:]
@@ -52,17 +58,21 @@ class MetaTemplate(nn.Module):
         top1_correct = np.sum(topk_ind[:, 0] == y_query)
         return float(top1_correct), len(y_query)
 
-    def train_loop(self, epoch, train_loader, optimizer):
+    def train_loop(self, epoch, train_loader, optimizer, writer):
         print_freq = 10
-
         avg_loss = 0
+
         for i, (x, _) in enumerate(train_loader):
             self.n_query = x.size(1) - self.n_support
             if self.change_way:
                 self.n_way = x.size(0)
             optimizer.zero_grad()
             loss = self.set_forward_loss(x)
+            writer.add_scalar('loss/total_loss', loss.item(), i)
             loss.backward()
+            if self.centered:
+                for param in self.loss_center.parameters():
+                    param.grad.data *= (1. / self.alpha)
             optimizer.step()
             avg_loss = avg_loss + loss.item()
 
@@ -91,7 +101,7 @@ class MetaTemplate(nn.Module):
 
         return acc_mean
 
-    def set_forward_adaptation(self, x,
+    def set_forward_adaptation(self, iter, x, writer,
                                is_feature=True):  # further adaptation, default is fixing feature and train a new softmax clasifier
         assert is_feature == True, 'Feature is fixed in further adaptation'
         z_support, z_query = self.parse_feature(x, is_feature)
